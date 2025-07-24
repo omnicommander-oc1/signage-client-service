@@ -129,6 +129,11 @@ async fn operating_system() -> String {
     "unknown".to_string()
 }
 
+async fn application_version() -> String {
+    // Get version from Cargo.toml at compile time
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Serialize)]
 pub struct Metrics {
     client_id: String,
@@ -141,6 +146,7 @@ pub struct Metrics {
     mpvstatus: String,
     chip_architecture: String,
     os: String,
+    version: String,
 }
 
 pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
@@ -155,6 +161,7 @@ pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
         mpvstatus: mpvstatus().await,
         chip_architecture: chip_architecture().await,
         os: operating_system().await,
+        version: application_version().await,
     };
 
     // Serialize metrics to JSON
