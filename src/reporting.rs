@@ -188,7 +188,7 @@ pub async fn send_metrics(
         return Err(format!("Invalid client ID format: {}", client_id).into());
     }
 
-    let url = format!("{}/client_vitals/{}", config.url, client_id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/vitals", config.url, client_id);
     println!("Sending metrics to {}", url);
 
     let res = client

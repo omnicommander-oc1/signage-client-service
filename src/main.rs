@@ -135,7 +135,7 @@ pub struct ClientActions {
 
 async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientActions> {
     let res = client
-        .get(format!("{}/client-actions/{}", config.url, config.id))
+        .get(format!("{}/api/omniplay/device-checkin/{}/actions", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -165,7 +165,7 @@ pub struct ClientPlaylistSchedule {
 
 async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
     let res = client
-        .get(format!("{}/client-playlists_schedule/{}", config.url, config.id))
+        .get(format!("{}/api/omniplay/device-checkin/{}/playlist-schedule", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -273,7 +273,7 @@ async fn process_schedules(
 
 
 /// If data.json has no current_playlist (no active schedule), fetch videos
-/// directly from the device's assigned playlist via GET /recieve-videos/{id}.
+/// directly from the device's assigned playlist via the device-checkin videos endpoint.
 /// This covers the common case where a playlist is assigned without a schedule.
 async fn fetch_direct_playlist_if_needed(
     client: &Client,
@@ -287,7 +287,7 @@ async fn fetch_direct_playlist_if_needed(
         return Ok(());
     }
 
-    let url = format!("{}/recieve-videos/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/videos", config.url, config.id);
     let res = client
         .get(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -318,7 +318,7 @@ async fn update_playlist_id(
     config: &Config,
     playlist_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-client-playlist/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/playlist", config.url, config.id);
 
     let response = client
         .post(&url)
@@ -339,7 +339,7 @@ async fn update_restart_app_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/restart-app", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -378,7 +378,7 @@ async fn update_restart_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/restart", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -453,7 +453,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 }
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/update-screenshot-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/screenshot-flag", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
