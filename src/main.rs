@@ -1,20 +1,17 @@
-use chrono::{DateTime, Utc, Duration as ChronoDuration}; 
+use chrono::{DateTime, Utc};
 use config::Config;
 use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
-use reqwest::multipart::{Form, Part};
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
-use std::fs::File;
-use std::io::Read;
 use std::str;
 use std::{boxed::Box, error::Error};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration as TokioDuration};
-use util::{set_display};
+use util::set_display;
 use uuid::Uuid;
 
 mod config;
@@ -26,13 +23,19 @@ mod data;
 async fn main() -> Result<(), Box<dyn Error>> {
     // Add --version flag support at the very top
     if std::env::args().any(|arg| arg == "--version") {
-        println!("v1.0.1");
+        println!("Signaged-Util");
+        println!("  Version: {}", env!("CARGO_PKG_VERSION"));
+        println!("  Git: {} ({})", env!("GIT_VERSION"), env!("GIT_HASH"));
+        println!("  Built: {}", env!("BUILD_TIME"));
         std::process::exit(0);
     }
 
     set_display();
     let mut config = Config::new();
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(TokioDuration::from_secs(30))
+        .connect_timeout(TokioDuration::from_secs(10))
+        .build()?;
 
     // Load the configs
     config.load().await?;
@@ -43,7 +46,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let mut metrics_interval = time::interval(TokioDuration::from_secs(30)); 
+    let mut metrics_interval = time::interval(TokioDuration::from_secs(30));
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut hup = signal(SignalKind::hangup())?;
 
     loop {
         tokio::select! {
@@ -56,9 +62,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 if let Some(api_key) = &config.key {
                     // Collect and send metrics
-                    let metrics = collect_and_write_metrics(&config.id).await;
-                    println!("Sending vitals");
-                    send_metrics(&config.id, &metrics, api_key, &config);
+                    match collect_and_write_metrics(&config.id).await {
+                        Ok(metrics) => {
+                            if let Err(e) = send_metrics(&client, &config.id, &metrics, api_key, &config).await {
+                                eprintln!("Failed to send metrics: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to collect metrics: {}", e);
+                        }
+                    }
 
                     // Check client actions
                     if let Some(actions) = get_client_actions(&client, &config).await {
@@ -92,27 +105,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     eprintln!("API key is missing. Skipping operations.");
                 }
             }
-        }
-    }
-}
-
-async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
-    let mut interval = time::interval(TokioDuration::from_secs(1)); 
-    loop {
-        let res = client.get(format!("{}/health", config.url)).send().await;
-        if let Ok(response) = res {
-            match response.status() {
-                StatusCode::OK => break,
-                StatusCode::INTERNAL_SERVER_ERROR => {
-                    println!("Server error. Retrying in 2 minutes...");
-                    time::interval(TokioDuration::from_secs(120)).tick().await;
+            _ = terminate.recv() => {
+                eprintln!("Received SIGTERM, shutting down...");
+                break;
+            }
+            _ = interrupt.recv() => {
+                eprintln!("Received SIGINT, shutting down...");
+                break;
+            }
+            _ = hup.recv() => {
+                eprintln!("Received SIGHUP, reloading configuration...");
+                if let Err(e) = config.load().await {
+                    eprintln!("Failed to reload configuration: {}", e);
                 }
-                _ => (),
             }
         }
-        interval.tick().await;
     }
-    Ok(true)
+
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -125,7 +135,7 @@ pub struct ClientActions {
 
 async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientActions> {
     let res = client
-        .get(format!("{}/client-actions/{}", config.url, config.id))
+        .get(format!("{}/api/omniplay/device-checkin/{}/actions", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -155,7 +165,7 @@ pub struct ClientPlaylistSchedule {
 
 async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
     let res = client
-        .get(format!("{}/client-playlists_schedule/{}", config.url, config.id))
+        .get(format!("{}/api/omniplay/device-checkin/{}/playlist-schedule", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -263,7 +273,7 @@ async fn process_schedules(
 
 
 /// If data.json has no current_playlist (no active schedule), fetch videos
-/// directly from the device's assigned playlist via GET /recieve-videos/{id}.
+/// directly from the device's assigned playlist via the device-checkin videos endpoint.
 /// This covers the common case where a playlist is assigned without a schedule.
 async fn fetch_direct_playlist_if_needed(
     client: &Client,
@@ -277,7 +287,7 @@ async fn fetch_direct_playlist_if_needed(
         return Ok(());
     }
 
-    let url = format!("{}/recieve-videos/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/videos", config.url, config.id);
     let res = client
         .get(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -308,7 +318,7 @@ async fn update_playlist_id(
     config: &Config,
     playlist_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-client-playlist/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/playlist", config.url, config.id);
 
     let response = client
         .post(&url)
@@ -329,7 +339,7 @@ async fn update_restart_app_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/restart-app", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -368,7 +378,7 @@ async fn update_restart_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/restart", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -395,8 +405,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
     let resolution_output = Command::new("xrandr")
         .arg("--current")
         .output()
-        .await
-        .expect("Failed to execute xrandr");
+        .await?;
 
     let resolution_str = std::str::from_utf8(&resolution_output.stdout)?;
     let resolution_line = resolution_str
@@ -444,7 +453,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 }
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/update-screenshot-device/{}", config.url, config.id);
+    let url = format!("{}/api/omniplay/device-checkin/{}/screenshot-flag", config.url, config.id);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -488,9 +497,7 @@ async fn upload_screenshot(
         .ok_or("Missing s3_key in presign response")?;
 
     // Step 2: Read the file and PUT directly to S3
-    let mut file = File::open(screenshot_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    let buffer = tokio::fs::read(screenshot_path).await?;
 
     let put_response = client
         .put(upload_url)

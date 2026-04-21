@@ -1,10 +1,9 @@
 use crate::config::Config;
 use crate::util::run_command;
-use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::Client;
 use serde::Serialize;
-use std::fs::File;
-use std::io::Write;
+use std::{boxed::Box, error::Error};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 pub async fn temp() -> String {
@@ -149,7 +148,7 @@ pub struct Metrics {
     version: String,
 }
 
-pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
+pub async fn collect_and_write_metrics(client_id: &str) -> Result<Metrics, Box<dyn Error>> {
     let metrics = Metrics {
         client_id: client_id.to_string(),
         temp: temp().await,
@@ -165,45 +164,40 @@ pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
     };
 
     // Serialize metrics to JSON
-    let json = serde_json::to_string_pretty(&metrics).expect("Failed to serialize metrics");
+    let json = serde_json::to_string_pretty(&metrics)?;
 
-    // Write JSON to a file
-    let mut file = File::create("metrics.json").expect("Failed to create file");
-    file.write_all(json.as_bytes())
-        .expect("Failed to write to file");
+    // Write JSON to a file using async I/O
+    let mut file = tokio::fs::File::create("metrics.json").await?;
+    file.write_all(json.as_bytes()).await?;
 
     // Print to console for verification
     println!("{}", json);
 
-    metrics
+    Ok(metrics)
 }
 
-pub fn send_metrics(client_id: &str, metrics: &Metrics, api_key: &str, config: &Config) {
+pub async fn send_metrics(
+    client: &Client,
+    client_id: &str,
+    metrics: &Metrics,
+    api_key: &str,
+    config: &Config,
+) -> Result<(), Box<dyn Error>> {
     // Check if the client_id is a valid UUID
-    if let Err(_) = Uuid::parse_str(client_id) {
-        println!("Invalid client ID format: {}", client_id);
-        return;
+    if Uuid::parse_str(client_id).is_err() {
+        return Err(format!("Invalid client ID format: {}", client_id).into());
     }
 
-    let client = Client::new();
-    let url = format!("{}/client_vitals/{}", config.url, client_id);
-
-    // Print the URL for debugging
-    println!("Sending metrics to daddy");
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        "Apikey",
-        HeaderValue::from_str(api_key).expect("Invalid API key"),
-    );
+    let url = format!("{}/api/omniplay/device-checkin/{}/vitals", config.url, client_id);
+    println!("Sending metrics to {}", url);
 
     let res = client
         .post(&url)
-        .headers(headers)
+        .header("Content-Type", "application/json")
+        .header("Apikey", api_key)
         .json(metrics)
         .send()
-        .expect("Failed to send metrics");
+        .await?;
 
     let status = res.status();
     if status.is_success() {
@@ -211,10 +205,10 @@ pub fn send_metrics(client_id: &str, metrics: &Metrics, api_key: &str, config: &
     } else {
         let error_text = res
             .text()
+            .await
             .unwrap_or_else(|_| "Failed to read error text".to_string());
-        println!(
-            "Failed to send metrics: {:?}\nError: {}",
-            status, error_text
-        );
+        eprintln!("Failed to send metrics: {:?}\nError: {}", status, error_text);
     }
+
+    Ok(())
 }
