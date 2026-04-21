@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Check if API key exists initially
     if config.key.is_none() || config.key.as_ref().unwrap().is_empty() {
         eprintln!("API key not found in configuration. Please set it manually.");
-        return Ok(());
+        std::process::exit(1);
     }
 
     let mut metrics_interval = time::interval(TokioDuration::from_secs(30));
@@ -139,12 +139,13 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
+        .map_err(|e| eprintln!("Failed to fetch client actions: {}", e))
         .ok()?;
 
     if res.status().is_success() {
         res.json::<ClientActions>().await.ok()
     } else {
-        println!("Failed to retrieve client actions: {:?}", res.status());
+        eprintln!("Failed to retrieve client actions: {:?}", res.status());
         None
     }
 }
@@ -169,12 +170,13 @@ async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Optio
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
+        .map_err(|e| eprintln!("Failed to fetch playlist schedule: {}", e))
         .ok()?;
 
     if res.status().is_success() {
-        res.json::<Vec<ClientPlaylistSchedule>>().await.ok() // Deserialize to Vec<ClientPlaylistSchedule>
+        res.json::<Vec<ClientPlaylistSchedule>>().await.ok()
     } else {
-        println!("Failed to retrieve client playlist schedule: {:?}", res.status());
+        eprintln!("Failed to retrieve client playlist schedule: {:?}", res.status());
         None
     }
 }
@@ -435,7 +437,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     if output.status.success() {
         // Rename temp file to final file (atomic operation)
-        std::fs::rename(&temp_screenshot_path, final_screenshot_path)?;
+        tokio::fs::rename(&temp_screenshot_path, final_screenshot_path).await?;
         println!("Screenshot saved");
         
         // Call the upload_screenshot function after taking the screenshot
@@ -501,7 +503,7 @@ async fn upload_screenshot(
 
     let put_response = client
         .put(upload_url)
-        .header("Content-Type", "image/jpeg")
+        .header("Content-Type", "image/png")
         .body(buffer)
         .send()
         .await?;
@@ -528,7 +530,7 @@ async fn upload_screenshot(
         println!("Screenshot confirmed");
 
         // Delete the local screenshot file
-        if let Err(e) = std::fs::remove_file(screenshot_path) {
+        if let Err(e) = tokio::fs::remove_file(screenshot_path).await {
             eprintln!("Failed to delete screenshot: {}", e);
         } else {
             println!("Screenshot completed");

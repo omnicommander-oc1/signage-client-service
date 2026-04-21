@@ -95,6 +95,7 @@ impl Video {
         while let Some(content) = stream.next().await {
             tokio::io::copy(&mut content?.as_ref(), &mut file).await?;
         }
+        file.flush().await?;
 
         println!("Downloaded to: {}", file_path);
 
@@ -103,15 +104,12 @@ impl Video {
 
     pub fn in_whitelist(&self) -> bool {
         let whitelist = ["s3.amazonaws.com", "omnicommando.com"];
-
-        for url in whitelist {
-            if self.asset_url.contains(url) {
+        for domain in &whitelist {
+            if self.asset_url.contains(domain) {
                 return true;
-            } else {
-                println!("URL not in whitelist: {}", self.asset_url);
             }
         }
-
+        println!("URL not in whitelist: {}", self.asset_url);
         false
     }
 }
