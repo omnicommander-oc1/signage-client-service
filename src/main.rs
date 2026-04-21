@@ -82,6 +82,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             eprintln!("Error processing schedules: {}", e);
                         }
                     }
+
+                    // If no schedule set a current_playlist, fall back to the
+                    // device's direct playlist by fetching videos from the API.
+                    if let Err(e) = fetch_direct_playlist_if_needed(&client, &config).await {
+                        eprintln!("Error fetching direct playlist: {}", e);
+                    }
                 } else {
                     eprintln!("API key is missing. Skipping operations.");
                 }
@@ -256,6 +262,47 @@ async fn process_schedules(
 }
 
 
+/// If data.json has no current_playlist (no active schedule), fetch videos
+/// directly from the device's assigned playlist via GET /recieve-videos/{id}.
+/// This covers the common case where a playlist is assigned without a schedule.
+async fn fetch_direct_playlist_if_needed(
+    client: &Client,
+    config: &Config,
+) -> Result<(), Box<dyn Error>> {
+    let mut data = Data::new();
+    data.load().await?;
+
+    // Only fetch if no schedule has set a current playlist
+    if data.current_playlist.is_some() && !data.videos.is_empty() {
+        return Ok(());
+    }
+
+    let url = format!("{}/recieve-videos/{}", config.url, config.id);
+    let res = client
+        .get(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .send()
+        .await?;
+
+    if !res.status().is_success() {
+        return Err(format!("Failed to fetch videos: {:?}", res.status()).into());
+    }
+
+    let videos: Vec<crate::util::Video> = res.json().await?;
+
+    if videos.is_empty() {
+        return Ok(());
+    }
+
+    // Update data.json with the fetched videos
+    data.videos = videos;
+    data.update_content = Some(true);
+    data.write().await?;
+    println!("Direct playlist videos loaded — {} assets", data.videos.len());
+
+    Ok(())
+}
+
 async fn update_playlist_id(
     client: &Client,
     config: &Config,
@@ -417,28 +464,63 @@ async fn upload_screenshot(
     config: &Config,
     screenshot_path: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/upload-screenshot/{}", config.url, config.id);
+    // Step 1: Get a presigned S3 URL from the API
+    let presign_url = format!(
+        "{}/api/omniplay/device-checkin/{}/screenshot-presign",
+        config.url, config.id
+    );
+    let presign_response = client
+        .get(&presign_url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .send()
+        .await?;
+
+    if !presign_response.status().is_success() {
+        return Err(format!("Failed to get presigned URL: {:?}", presign_response.status()).into());
+    }
+
+    let presign_data: serde_json::Value = presign_response.json().await?;
+    let upload_url = presign_data["upload_url"]
+        .as_str()
+        .ok_or("Missing upload_url in presign response")?;
+    let s3_key = presign_data["s3_key"]
+        .as_str()
+        .ok_or("Missing s3_key in presign response")?;
+
+    // Step 2: Read the file and PUT directly to S3
     let mut file = File::open(screenshot_path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
-    let part = Part::bytes(buffer)
-        .file_name("screenshot.png")
-        .mime_str("image/png")?;
-
-    let form = Form::new().part("file", part);
-
-    let response = client
-        .post(&url)
-        .header("APIKEY", config.key.clone().unwrap_or_default())
-        .multipart(form)
+    let put_response = client
+        .put(upload_url)
+        .header("Content-Type", "image/jpeg")
+        .body(buffer)
         .send()
         .await?;
 
-    if response.status().is_success() {
-        println!("Screenshot uploaded");
+    if !put_response.status().is_success() {
+        return Err(format!("Failed to upload to S3: {:?}", put_response.status()).into());
+    }
 
-        // Delete the screenshot file from the device
+    println!("Screenshot uploaded to S3");
+
+    // Step 3: Confirm the upload with the API
+    let confirm_url = format!(
+        "{}/api/omniplay/device-checkin/{}/screenshot-confirm",
+        config.url, config.id
+    );
+    let confirm_response = client
+        .post(&confirm_url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&json!({ "s3_key": s3_key }))
+        .send()
+        .await?;
+
+    if confirm_response.status().is_success() {
+        println!("Screenshot confirmed");
+
+        // Delete the local screenshot file
         if let Err(e) = std::fs::remove_file(screenshot_path) {
             eprintln!("Failed to delete screenshot: {}", e);
         } else {
@@ -451,6 +533,6 @@ async fn upload_screenshot(
 
         Ok(())
     } else {
-        Err(format!("Failed to upload screenshot: {:?}", response.status()).into())
+        Err(format!("Failed to confirm screenshot: {:?}", confirm_response.status()).into())
     }
 }
