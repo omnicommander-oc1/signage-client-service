@@ -312,6 +312,37 @@ async fn fetch_direct_playlist_if_needed(
     data.write().await?;
     println!("Direct playlist videos loaded — {} assets", data.videos.len());
 
+    rebuild_playlist(client, &data.videos).await?;
+
+    Ok(())
+}
+
+/// Downloads whitelisted videos and rewrites `playlist.txt` atomically so
+/// MPV's source-of-truth file stays in lockstep with `data.json`. Stale
+/// on-disk assets that aren't in the new list are removed.
+async fn rebuild_playlist(
+    client: &Client,
+    videos: &[crate::util::Video],
+) -> Result<(), Box<dyn Error>> {
+    let home = std::env::var("HOME")?;
+    let dir = format!("{}/.local/share/signage", home);
+    let playlist_path = format!("{dir}/playlist.txt");
+    let temp_path = format!("{playlist_path}.tmp");
+
+    let mut contents = String::new();
+    for video in videos {
+        if !video.in_whitelist() {
+            continue;
+        }
+        let file_path = video.download(client).await?;
+        contents.push_str(&file_path);
+        contents.push('\n');
+    }
+
+    tokio::fs::write(&temp_path, contents).await?;
+    tokio::fs::rename(&temp_path, &playlist_path).await?;
+
+    crate::util::cleanup_directory(&dir, videos).await?;
     Ok(())
 }
 
