@@ -428,17 +428,135 @@ async fn update_restart_flag(
 
 async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     println!("Taking screenshot");
-    env::set_var("DISPLAY", ":0");
-    env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
 
     let temp_screenshot_path = format!("/home/pi/screenshot_temp_{}.png", Uuid::new_v4());
     let final_screenshot_path = "/home/pi/screenshot.png";
 
+    // Capture Wayland-natively first. Pi OS (wayfire/labwc) composites the MPV
+    // surface through the Wayland compositor, so the legacy `ffmpeg x11grab` path
+    // only ever sees an empty X11 root and produces a black frame. `grim` reads the
+    // compositor's real output via wlr-screencopy. Fall back to X11 for any older
+    // X11-only device.
+    let captured = match capture_wayland(&temp_screenshot_path).await {
+        Ok(true) => true,
+        Ok(false) => {
+            eprintln!("Wayland capture (grim) did not succeed; falling back to X11 grab");
+            capture_x11(&temp_screenshot_path).await.unwrap_or(false)
+        }
+        Err(e) => {
+            eprintln!("Wayland capture errored ({}); falling back to X11 grab", e);
+            capture_x11(&temp_screenshot_path).await.unwrap_or(false)
+        }
+    };
+
+    if captured {
+        // Rename temp file to final file (atomic operation)
+        tokio::fs::rename(&temp_screenshot_path, final_screenshot_path).await?;
+        println!("Screenshot saved");
+
+        // Call the upload_screenshot function after taking the screenshot
+        if let Err(e) = upload_screenshot(client, config, final_screenshot_path).await {
+            eprintln!("Failed to upload screenshot: {}", e);
+        }
+    } else {
+        eprintln!("Failed to capture screenshot via Wayland or X11");
+        let _ = tokio::fs::remove_file(&temp_screenshot_path).await;
+    }
+
+    Ok(())
+}
+
+/// Whether this process is running as root (uid 0). The daemon normally runs as
+/// root, but the Wayland compositor runs as the desktop user, so we may need to
+/// drop privileges for `grim`.
+async fn running_as_root() -> bool {
+    match Command::new("id").arg("-u").output().await {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "0",
+        _ => false,
+    }
+}
+
+/// Find the active Wayland socket (e.g. "wayland-0" / "wayland-1") in the runtime
+/// dir. Honors an explicit `WAYLAND_DISPLAY` if one is already set.
+async fn detect_wayland_display(runtime_dir: &str) -> Option<String> {
+    if let Ok(existing) = env::var("WAYLAND_DISPLAY") {
+        if !existing.is_empty() {
+            return Some(existing);
+        }
+    }
+
+    let mut entries = tokio::fs::read_dir(runtime_dir).await.ok()?;
+    let mut candidates: Vec<String> = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Match "wayland-N"; skip the "wayland-N.lock" files.
+        if name.starts_with("wayland-") && !name.ends_with(".lock") {
+            candidates.push(name);
+        }
+    }
+    // Prefer the highest-numbered socket (labwc/wayfire commonly use wayland-1).
+    candidates.sort();
+    candidates.pop()
+}
+
+/// Capture the current Wayland output with `grim` (wlr-screencopy).
+/// Returns `Ok(true)` on success, `Ok(false)` if grim is unavailable or failed.
+async fn capture_wayland(out_path: &str) -> Result<bool, Box<dyn Error>> {
+    let runtime_dir =
+        env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+
+    let Some(wayland_display) = detect_wayland_display(&runtime_dir).await else {
+        eprintln!(
+            "No Wayland socket found under {} — is a Wayland compositor running?",
+            runtime_dir
+        );
+        return Ok(false);
+    };
+
+    // Wayland sockets reject connections from a different user. When running as
+    // root, drop to the desktop user (pi) via `runuser`, re-injecting the session
+    // env with `env` (runuser otherwise strips it). When already running as the
+    // session user, invoke grim directly.
+    let output = if running_as_root().await {
+        Command::new("runuser")
+            .arg("-u")
+            .arg("pi")
+            .arg("--")
+            .arg("/usr/bin/env")
+            .arg(format!("XDG_RUNTIME_DIR={}", runtime_dir))
+            .arg(format!("WAYLAND_DISPLAY={}", wayland_display))
+            .arg("grim")
+            .arg(out_path)
+            .output()
+            .await?
+    } else {
+        Command::new("grim")
+            .env("XDG_RUNTIME_DIR", &runtime_dir)
+            .env("WAYLAND_DISPLAY", &wayland_display)
+            .arg(out_path)
+            .output()
+            .await?
+    };
+
+    if output.status.success() {
+        Ok(true)
+    } else {
+        eprintln!(
+            "grim failed (is the `grim` package installed?): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(false)
+    }
+}
+
+/// Legacy X11 capture via `ffmpeg x11grab`. Retained only as a fallback for older
+/// X11-only devices — it yields a black frame under Wayland.
+async fn capture_x11(out_path: &str) -> Result<bool, Box<dyn Error>> {
+    env::set_var("DISPLAY", ":0");
+    env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+
     // Get the screen resolution dynamically using `xrandr`
-    let resolution_output = Command::new("xrandr")
-        .arg("--current")
-        .output()
-        .await?;
+    let resolution_output = Command::new("xrandr").arg("--current").output().await?;
 
     let resolution_str = std::str::from_utf8(&resolution_output.stdout)?;
     let resolution_line = resolution_str
@@ -462,27 +580,19 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
         .arg(":0.0")
         .arg("-frames:v")
         .arg("1")
-        .arg(&temp_screenshot_path)
+        .arg(out_path)
         .output()
         .await?;
 
     if output.status.success() {
-        // Rename temp file to final file (atomic operation)
-        tokio::fs::rename(&temp_screenshot_path, final_screenshot_path).await?;
-        println!("Screenshot saved");
-        
-        // Call the upload_screenshot function after taking the screenshot
-        if let Err(e) = upload_screenshot(client, config, final_screenshot_path).await {
-            eprintln!("Failed to upload screenshot: {}", e);
-        }
+        Ok(true)
     } else {
         eprintln!(
-            "Failed to take screenshot: {}",
+            "ffmpeg x11grab failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        Ok(false)
     }
-
-    Ok(())
 }
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
