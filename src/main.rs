@@ -15,9 +15,10 @@ use util::set_display;
 use uuid::Uuid;
 
 mod config;
+mod data;
+mod remoteit;
 mod reporting;
 mod util;
-mod data;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -45,6 +46,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("API key not found in configuration. Please set it manually.");
         std::process::exit(1);
     }
+
+    // Non-blocking: install remote.it if missing (once per boot; failures are logged only).
+    remoteit::spawn_ensure_once();
 
     let mut metrics_interval = time::interval(TokioDuration::from_secs(30));
     let mut terminate = signal(SignalKind::terminate())?;
