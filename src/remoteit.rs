@@ -100,9 +100,8 @@ fn should_retry(state: &RemoteItState) -> bool {
 
 async fn run_install_script() -> Result<(), String> {
     let code = registration_code();
-    let script = format!(
-        "R3_REGISTRATION_CODE=\"{code}\" sh -c \"$(curl -fsSL {INSTALL_SCRIPT_URL})\""
-    );
+    let script =
+        format!("R3_REGISTRATION_CODE=\"{code}\" sh -c \"$(curl -fsSL {INSTALL_SCRIPT_URL})\"");
 
     let output = timeout(
         TokioDuration::from_secs(INSTALL_TIMEOUT_SECS),

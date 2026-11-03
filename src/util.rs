@@ -181,7 +181,9 @@ pub async fn cleanup_directory(dir: &str, _videos: &[Video]) -> Result<(), Box<d
             if filename != "playlist.txt" && filename != "data.json" {
                 // Delete the file if it's not in playlist.txt (exact path match)
                 if !playlist_files.iter().any(|f| {
-                    Path::new(f.trim()).file_name().map_or(false, |n| n == filename.as_str())
+                    Path::new(f.trim())
+                        .file_name()
+                        .map_or(false, |n| n == filename.as_str())
                 }) {
                     println!("Deleting file not in playlist: {}", filename);
                     fs::remove_file(path).await?;

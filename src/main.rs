@@ -139,7 +139,10 @@ pub struct ClientActions {
 
 async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientActions> {
     let res = client
-        .get(format!("{}/api/omniplay/device-checkin/{}/actions", config.url, config.id))
+        .get(format!(
+            "{}/api/omniplay/device-checkin/{}/actions",
+            config.url, config.id
+        ))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -154,7 +157,6 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientPlaylistSchedule {
     pub id: Uuid,
@@ -168,9 +170,15 @@ pub struct ClientPlaylistSchedule {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
+async fn get_client_playlist_schedule(
+    client: &Client,
+    config: &Config,
+) -> Option<Vec<ClientPlaylistSchedule>> {
     let res = client
-        .get(format!("{}/api/omniplay/device-checkin/{}/playlist-schedule", config.url, config.id))
+        .get(format!(
+            "{}/api/omniplay/device-checkin/{}/playlist-schedule",
+            config.url, config.id
+        ))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -180,7 +188,10 @@ async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Optio
     if res.status().is_success() {
         res.json::<Vec<ClientPlaylistSchedule>>().await.ok()
     } else {
-        eprintln!("Failed to retrieve client playlist schedule: {:?}", res.status());
+        eprintln!(
+            "Failed to retrieve client playlist schedule: {:?}",
+            res.status()
+        );
         None
     }
 }
@@ -237,7 +248,7 @@ async fn restart_app(client: &Client, config: &Config) {
 async fn process_schedules(
     client: &Client,
     config: &Config,
-    schedules: Vec<ClientPlaylistSchedule>
+    schedules: Vec<ClientPlaylistSchedule>,
 ) -> Result<(), Box<dyn Error>> {
     let now = Utc::now();
 
@@ -277,7 +288,6 @@ async fn process_schedules(
     Ok(())
 }
 
-
 /// If data.json has no current_playlist (no active schedule), fetch videos
 /// directly from the device's assigned playlist via the device-checkin videos endpoint.
 /// This covers the common case where a playlist is assigned without a schedule.
@@ -293,7 +303,10 @@ async fn fetch_direct_playlist_if_needed(
         return Ok(());
     }
 
-    let url = format!("{}/api/omniplay/device-checkin/{}/videos", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/videos",
+        config.url, config.id
+    );
     let res = client
         .get(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -314,7 +327,10 @@ async fn fetch_direct_playlist_if_needed(
     data.videos = videos;
     data.update_content = Some(true);
     data.write().await?;
-    println!("Direct playlist videos loaded — {} assets", data.videos.len());
+    println!(
+        "Direct playlist videos loaded — {} assets",
+        data.videos.len()
+    );
 
     rebuild_playlist(client, &data.videos).await?;
 
@@ -355,7 +371,10 @@ async fn update_playlist_id(
     config: &Config,
     playlist_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/playlist", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/playlist",
+        config.url, config.id
+    );
 
     let response = client
         .post(&url)
@@ -371,12 +390,14 @@ async fn update_playlist_id(
     }
 }
 
-
 async fn update_restart_app_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/restart-app", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/restart-app",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -390,7 +411,6 @@ async fn update_restart_app_flag(
         Err(format!("Failed to update restart flag: {:?}", response.status()).into())
     }
 }
-
 
 async fn restart_device(client: &Client, config: &Config) {
     // Update the restart flag to false
@@ -415,7 +435,10 @@ async fn update_restart_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/restart", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/restart",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -506,8 +529,7 @@ async fn detect_wayland_display(runtime_dir: &str) -> Option<String> {
 /// Capture the current Wayland output with `grim` (wlr-screencopy).
 /// Returns `Ok(true)` on success, `Ok(false)` if grim is unavailable or failed.
 async fn capture_wayland(out_path: &str) -> Result<bool, Box<dyn Error>> {
-    let runtime_dir =
-        env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
 
     let Some(wayland_display) = detect_wayland_display(&runtime_dir).await else {
         eprintln!(
@@ -600,7 +622,10 @@ async fn capture_x11(out_path: &str) -> Result<bool, Box<dyn Error>> {
 }
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/screenshot-flag", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/screenshot-flag",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -632,7 +657,11 @@ async fn upload_screenshot(
         .await?;
 
     if !presign_response.status().is_success() {
-        return Err(format!("Failed to get presigned URL: {:?}", presign_response.status()).into());
+        return Err(format!(
+            "Failed to get presigned URL: {:?}",
+            presign_response.status()
+        )
+        .into());
     }
 
     let presign_data: serde_json::Value = presign_response.json().await?;
@@ -687,6 +716,10 @@ async fn upload_screenshot(
 
         Ok(())
     } else {
-        Err(format!("Failed to confirm screenshot: {:?}", confirm_response.status()).into())
+        Err(format!(
+            "Failed to confirm screenshot: {:?}",
+            confirm_response.status()
+        )
+        .into())
     }
 }

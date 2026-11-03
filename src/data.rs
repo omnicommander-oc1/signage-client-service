@@ -1,8 +1,8 @@
+use crate::util::{load_json, write_json, Video};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{boxed::Box, env, error::Error};
 use uuid::Uuid;
-use crate::util::{load_json, write_json, Video};
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Data {
