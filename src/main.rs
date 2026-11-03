@@ -13,6 +13,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration as TokioDuration};
 use uuid::Uuid;
 
+mod capture;
 mod config;
 mod data;
 mod paths;
@@ -544,37 +545,26 @@ async fn capture_wayland(out_path: &str) -> Result<bool, Box<dyn Error>> {
     // root (legacy fleet unit), drop to the desktop user (pi) via `runuser`,
     // re-injecting the session env with `env` (runuser otherwise strips it). When
     // already running as the session user (the image: cage and signaged-util are
-    // both `omniplay`), invoke grim directly.
-    let output = if privilege::current_privilege().await.is_root() {
-        Command::new("runuser")
-            .arg("-u")
-            .arg("pi")
-            .arg("--")
-            .arg("/usr/bin/env")
-            .arg(format!("XDG_RUNTIME_DIR={}", runtime_dir))
-            .arg(format!("WAYLAND_DISPLAY={}", wayland_display))
-            .arg("grim")
-            .arg(out_path)
-            .output()
-            .await?
-    } else {
-        Command::new("grim")
-            .env("XDG_RUNTIME_DIR", &runtime_dir)
-            .env("WAYLAND_DISPLAY", &wayland_display)
-            .arg(out_path)
-            .output()
-            .await?
-    };
+    // both `omniplay`), invoke grim directly. Either way grim streams the PNG to
+    // stdout and this process writes the file: `out_path` is under the data dir,
+    // which on a legacy device is /root/..., where `pi` could not write.
+    let grim = capture::grim_command(
+        privilege::current_privilege().await,
+        &runtime_dir,
+        &wayland_display,
+    );
+    let output = grim.to_command().output().await?;
 
-    if output.status.success() {
-        Ok(true)
-    } else {
+    let png = capture::png_from_output(&output);
+    if png.is_none() {
         eprintln!(
-            "grim failed (is the `grim` package installed?): {}",
+            "grim failed (is the `grim` package installed?): exit {}, {} bytes on stdout: {}",
+            output.status,
+            output.stdout.len(),
             String::from_utf8_lossy(&output.stderr)
         );
-        Ok(false)
     }
+    capture::save_png(png, out_path).await
 }
 
 /// Legacy X11 capture via `ffmpeg x11grab`. Retained only as a fallback for older

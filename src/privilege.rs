@@ -36,36 +36,47 @@ impl Privilege {
             Privilege::Unprivileged
         }
     }
-
-    pub fn is_root(self) -> bool {
-        self == Privilege::Root
-    }
 }
 
-/// A program and its arguments, kept as data so the choice can be tested without running anything.
+/// A program, its arguments and extra environment, kept as data so the choice can be tested
+/// without running anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandLine {
     pub program: String,
     pub args: Vec<String>,
+    /// Variables set on the child on top of the inherited environment.
+    pub env: Vec<(String, String)>,
 }
 
 impl CommandLine {
-    fn new(program: &str, args: &[&str]) -> Self {
+    pub fn new(program: &str, args: &[&str]) -> Self {
         CommandLine {
             program: program.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
+            env: Vec::new(),
         }
+    }
+
+    pub fn with_env(mut self, name: &str, value: &str) -> Self {
+        self.env.push((name.to_string(), value.to_string()));
+        self
     }
 
     pub fn to_command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.args);
+        for (name, value) in &self.env {
+            command.env(name, value);
+        }
         command
     }
 }
 
 impl fmt::Display for CommandLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (name, value) in &self.env {
+            write!(f, "{name}={value} ")?;
+        }
         write!(f, "{}", self.program)?;
         for arg in &self.args {
             write!(f, " {arg}")?;
@@ -133,8 +144,6 @@ mod tests {
         assert_eq!(Privilege::from_uid(0), Privilege::Root);
         assert_eq!(Privilege::from_uid(1000), Privilege::Unprivileged);
         assert_eq!(Privilege::from_uid(65534), Privilege::Unprivileged);
-        assert!(Privilege::Root.is_root());
-        assert!(!Privilege::Unprivileged.is_root());
     }
 
     #[test]
