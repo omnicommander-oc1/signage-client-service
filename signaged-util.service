@@ -1,0 +1,51 @@
+# systemd unit for signaged-util, the companion binary (vitals, screenshots, remote actions) built from
+# this repository (omnicommander-oc1/signage-client-service), as shipped by the OMNIPLAY Pi OS image
+# (omnicommander-oc1/omniplay-pi-os, image/stage-omniplay/01-system/files/systemd/). The image's copy
+# is the one installed on players; this one documents what the binary expects from its unit and is
+# kept in step with it and with signaged.service in omnicommander-oc1/omniplay-device.
+#
+# No root, no X11. The binary runs as the unprivileged `omniplay` user, the same user that runs cage
+# and signaged, so it reads the same signage.json and shares the data directory (src/paths.rs resolves
+# both from XDG_CONFIG_HOME / XDG_DATA_HOME). Screenshots are taken with grim through cage's Wayland
+# socket in XDG_RUNTIME_DIR and written to <data dir>/screenshots/. Remote restart and reboot go
+# through `systemctl` over D-Bus, authorised by the polkit rule in polkit/10-omniplay-signaged-util.rules
+# (src/privilege.rs); there is no sudo and NoNewPrivileges=yes would make it useless anyway.
+#
+# Fielded (pre-image) devices keep their old unit, which runs the binary as root with DISPLAY=:0 and
+# HOME=/root and no XDG variables; the binary still supports that layout.
+[Unit]
+Description=OMNIPLAY device utility (vitals, screenshots, remote actions)
+After=network-online.target signaged.service
+Wants=network-online.target
+# The config the binary reads: $XDG_CONFIG_HOME/signage/signage.json (written by provisioning).
+ConditionPathExists=/var/lib/omniplay/.config/signage/signage.json
+
+[Service]
+Type=simple
+User=omniplay
+Group=omniplay
+SupplementaryGroups=video render
+Environment=HOME=/var/lib/omniplay
+Environment=XDG_CONFIG_HOME=/var/lib/omniplay/.config
+Environment=XDG_DATA_HOME=/var/lib/omniplay/.local/share
+# Where cage (started by signaged.service, same user) puts its Wayland socket; grim connects to it
+# from here for the screenshot action.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/signaged-util
+Restart=always
+RestartSec=30s
+NoNewPrivileges=yes
+ProtectSystem=strict
+# read-only, NOT yes: ProtectHome=yes makes /home, /root and /run/user inaccessible (systemd.exec(5)),
+# which would hide cage's Wayland socket. read-only keeps /home and /root protected while /run/user
+# stays visible; connecting to a Unix socket works on a read-only bind mount (nothing is created), so
+# only the data dir needs to be writable. The PNG goes under /var/lib/omniplay.
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/omniplay
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signaged-util
+
+[Install]
+WantedBy=multi-user.target

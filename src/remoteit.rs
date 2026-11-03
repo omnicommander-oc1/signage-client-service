@@ -27,8 +27,8 @@ struct RemoteItState {
 }
 
 fn state_file_path() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    Some(format!("{home}/.config/signage/remoteit.state"))
+    let config_dir = crate::paths::config_dir().ok()?;
+    Some(format!("{config_dir}/remoteit.state"))
 }
 
 async fn command_succeeds(program: &str, args: &[&str]) -> bool {

@@ -1,0 +1,39 @@
+// polkit rule for signaged-util on the OMNIPLAY Pi OS image (omnicommander-oc1/omniplay-pi-os).
+//
+// signaged-util.service runs as the unprivileged `omniplay` user under NoNewPrivileges=yes, so it
+// cannot use sudo. For a remote "restart app" it runs `systemctl restart signaged.service` and for a
+// remote "restart" it runs `systemctl reboot` (src/privilege.rs). systemctl sends those requests to
+// systemd (org.freedesktop.systemd1) and logind (org.freedesktop.login1) over the system D-Bus, and
+// polkitd decides whether the caller may. This rule says yes for exactly those two things and
+// nothing else; everything stays NOT_HANDLED for other users, units and verbs, so polkit's defaults
+// (auth_admin) still apply to them.
+//
+// Install as /etc/polkit-1/rules.d/10-omniplay-signaged-util.rules, owned by root, mode 0644
+// (the image's 01-system stage copies it there; polkitd picks rules up without a restart).
+// Requires the `polkitd` package, which the image already installs (00-packages).
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "omniplay") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // `systemctl restart signaged.service` (also start/stop/try-restart of that one unit).
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") === "signaged.service") {
+        var verb = action.lookup("verb");
+        if (verb === "restart" || verb === "try-restart" ||
+            verb === "start" || verb === "stop") {
+            return polkit.Result.YES;
+        }
+    }
+
+    // `systemctl reboot`: logind picks one of these depending on whether other users have
+    // sessions and whether an inhibitor lock is held. A player has neither, but allow all three so
+    // a stray session can never leave the device unreachable.
+    if (action.id === "org.freedesktop.login1.reboot" ||
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions" ||
+        action.id === "org.freedesktop.login1.reboot-ignore-inhibit") {
+        return polkit.Result.YES;
+    }
+
+    return polkit.Result.NOT_HANDLED;
+});
