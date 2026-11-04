@@ -27,8 +27,8 @@ struct RemoteItState {
 }
 
 fn state_file_path() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    Some(format!("{home}/.config/signage/remoteit.state"))
+    let config_dir = crate::paths::config_dir().ok()?;
+    Some(format!("{config_dir}/remoteit.state"))
 }
 
 async fn command_succeeds(program: &str, args: &[&str]) -> bool {
@@ -100,9 +100,8 @@ fn should_retry(state: &RemoteItState) -> bool {
 
 async fn run_install_script() -> Result<(), String> {
     let code = registration_code();
-    let script = format!(
-        "R3_REGISTRATION_CODE=\"{code}\" sh -c \"$(curl -fsSL {INSTALL_SCRIPT_URL})\""
-    );
+    let script =
+        format!("R3_REGISTRATION_CODE=\"{code}\" sh -c \"$(curl -fsSL {INSTALL_SCRIPT_URL})\"");
 
     let output = timeout(
         TokioDuration::from_secs(INSTALL_TIMEOUT_SECS),

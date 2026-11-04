@@ -70,61 +70,73 @@ async fn chip_architecture() -> String {
         .unwrap_or_default()
         .trim()
         .to_string();
-    
+
     // If we got a result, return it
     if !arch.is_empty() {
         return arch;
     }
-    
+
     // Fallback: try to read from /proc/cpuinfo
-    let cpuinfo = run_command("sh", &["-c", "cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | tr -d ' '"])
-        .await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    
+    let cpuinfo = run_command(
+        "sh",
+        &[
+            "-c",
+            "cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | tr -d ' '",
+        ],
+    )
+    .await
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+
     if !cpuinfo.is_empty() {
         return cpuinfo;
     }
-    
+
     // Final fallback
     "unknown".to_string()
 }
 
 async fn operating_system() -> String {
     // Try to get OS info from /etc/os-release
-    let os_info = run_command("sh", &["-c", "cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'"])
-        .await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    
+    let os_info = run_command(
+        "sh",
+        &[
+            "-c",
+            "cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'",
+        ],
+    )
+    .await
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+
     if !os_info.is_empty() {
         return os_info;
     }
-    
+
     // Fallback: try lsb_release
     let lsb_info = run_command("sh", &["-c", "lsb_release -d | cut -f2"])
         .await
         .unwrap_or_default()
         .trim()
         .to_string();
-    
+
     if !lsb_info.is_empty() {
         return lsb_info;
     }
-    
+
     // Final fallback: uname -a
     let uname_info = run_command("sh", &["-c", "uname -a"])
         .await
         .unwrap_or_default()
         .trim()
         .to_string();
-    
+
     if !uname_info.is_empty() {
         return uname_info;
     }
-    
+
     "unknown".to_string()
 }
 
@@ -188,7 +200,10 @@ pub async fn send_metrics(
         return Err(format!("Invalid client ID format: {}", client_id).into());
     }
 
-    let url = format!("{}/api/omniplay/device-checkin/{}/vitals", config.url, client_id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/vitals",
+        config.url, client_id
+    );
     println!("Sending metrics to {}", url);
 
     let res = client
@@ -207,7 +222,10 @@ pub async fn send_metrics(
             .text()
             .await
             .unwrap_or_else(|_| "Failed to read error text".to_string());
-        eprintln!("Failed to send metrics: {:?}\nError: {}", status, error_text);
+        eprintln!(
+            "Failed to send metrics: {:?}\nError: {}",
+            status, error_text
+        );
     }
 
     Ok(())

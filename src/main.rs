@@ -11,11 +11,13 @@ use std::{boxed::Box, error::Error};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration as TokioDuration};
-use util::set_display;
 use uuid::Uuid;
 
+mod capture;
 mod config;
 mod data;
+mod paths;
+mod privilege;
 mod remoteit;
 mod reporting;
 mod util;
@@ -31,7 +33,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(0);
     }
 
-    set_display();
+    // No DISPLAY is forced any more: on the OMNIPLAY Pi OS image there is no X11, and the
+    // legacy fleet unit already carries DISPLAY=:0 for the x11grab screenshot fallback.
     let mut config = Config::new();
     let client = Client::builder()
         .timeout(TokioDuration::from_secs(30))
@@ -139,7 +142,10 @@ pub struct ClientActions {
 
 async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientActions> {
     let res = client
-        .get(format!("{}/api/omniplay/device-checkin/{}/actions", config.url, config.id))
+        .get(format!(
+            "{}/api/omniplay/device-checkin/{}/actions",
+            config.url, config.id
+        ))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -154,7 +160,6 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientPlaylistSchedule {
     pub id: Uuid,
@@ -168,9 +173,15 @@ pub struct ClientPlaylistSchedule {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
+async fn get_client_playlist_schedule(
+    client: &Client,
+    config: &Config,
+) -> Option<Vec<ClientPlaylistSchedule>> {
     let res = client
-        .get(format!("{}/api/omniplay/device-checkin/{}/playlist-schedule", config.url, config.id))
+        .get(format!(
+            "{}/api/omniplay/device-checkin/{}/playlist-schedule",
+            config.url, config.id
+        ))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await
@@ -180,7 +191,10 @@ async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Optio
     if res.status().is_success() {
         res.json::<Vec<ClientPlaylistSchedule>>().await.ok()
     } else {
-        eprintln!("Failed to retrieve client playlist schedule: {:?}", res.status());
+        eprintln!(
+            "Failed to retrieve client playlist schedule: {:?}",
+            res.status()
+        );
         None
     }
 }
@@ -211,12 +225,14 @@ async fn restart_app(client: &Client, config: &Config) {
         }
     }
 
-    let restart_service_output = Command::new("sudo")
-        .arg("systemctl")
-        .arg("restart")
-        .arg("signaged.service")
-        .output()
-        .await;
+    // `sudo systemctl restart` as root (legacy fleet), plain `systemctl restart` as the
+    // omniplay user (polkit authorises it over D-Bus; see src/privilege.rs).
+    let restart = privilege::restart_unit_command(
+        privilege::current_privilege().await,
+        privilege::SIGNAGED_UNIT,
+    );
+    println!("Running: {}", restart);
+    let restart_service_output = restart.to_command().output().await;
 
     match restart_service_output {
         Ok(output) if output.status.success() => {
@@ -237,7 +253,7 @@ async fn restart_app(client: &Client, config: &Config) {
 async fn process_schedules(
     client: &Client,
     config: &Config,
-    schedules: Vec<ClientPlaylistSchedule>
+    schedules: Vec<ClientPlaylistSchedule>,
 ) -> Result<(), Box<dyn Error>> {
     let now = Utc::now();
 
@@ -277,7 +293,6 @@ async fn process_schedules(
     Ok(())
 }
 
-
 /// If data.json has no current_playlist (no active schedule), fetch videos
 /// directly from the device's assigned playlist via the device-checkin videos endpoint.
 /// This covers the common case where a playlist is assigned without a schedule.
@@ -293,7 +308,10 @@ async fn fetch_direct_playlist_if_needed(
         return Ok(());
     }
 
-    let url = format!("{}/api/omniplay/device-checkin/{}/videos", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/videos",
+        config.url, config.id
+    );
     let res = client
         .get(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -314,7 +332,10 @@ async fn fetch_direct_playlist_if_needed(
     data.videos = videos;
     data.update_content = Some(true);
     data.write().await?;
-    println!("Direct playlist videos loaded — {} assets", data.videos.len());
+    println!(
+        "Direct playlist videos loaded — {} assets",
+        data.videos.len()
+    );
 
     rebuild_playlist(client, &data.videos).await?;
 
@@ -328,9 +349,8 @@ async fn rebuild_playlist(
     client: &Client,
     videos: &[crate::util::Video],
 ) -> Result<(), Box<dyn Error>> {
-    let home = std::env::var("HOME")?;
-    let dir = format!("{}/.local/share/signage", home);
-    let playlist_path = format!("{dir}/playlist.txt");
+    let dir = paths::data_dir()?;
+    let playlist_path = format!("{dir}/{}", paths::PLAYLIST_FILE);
     let temp_path = format!("{playlist_path}.tmp");
 
     let mut contents = String::new();
@@ -355,7 +375,10 @@ async fn update_playlist_id(
     config: &Config,
     playlist_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/playlist", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/playlist",
+        config.url, config.id
+    );
 
     let response = client
         .post(&url)
@@ -371,12 +394,14 @@ async fn update_playlist_id(
     }
 }
 
-
 async fn update_restart_app_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/restart-app", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/restart-app",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -391,7 +416,6 @@ async fn update_restart_app_flag(
     }
 }
 
-
 async fn restart_device(client: &Client, config: &Config) {
     // Update the restart flag to false
     let update_result = update_restart_flag(client, config).await;
@@ -402,7 +426,11 @@ async fn restart_device(client: &Client, config: &Config) {
     }
 
     println!("Restarting device...");
-    let status = Command::new("sudo").arg("reboot").status().await;
+    // `sudo reboot` as root (legacy fleet), `systemctl reboot` as the omniplay user (logind +
+    // polkit; see src/privilege.rs).
+    let reboot = privilege::reboot_command(privilege::current_privilege().await);
+    println!("Running: {}", reboot);
+    let status = reboot.to_command().status().await;
 
     match status {
         Ok(status) if status.success() => println!("Device is restarting..."),
@@ -415,7 +443,10 @@ async fn update_restart_flag(
     client: &Client,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/restart", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/restart",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -433,8 +464,12 @@ async fn update_restart_flag(
 async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     println!("Taking screenshot");
 
-    let temp_screenshot_path = format!("/home/pi/screenshot_temp_{}.png", Uuid::new_v4());
-    let final_screenshot_path = "/home/pi/screenshot.png";
+    // Under the data dir, the only writable place under the image's `ProtectSystem=strict` unit,
+    // in its own sub-directory so `cleanup_directory` never prunes a capture in progress.
+    let screenshot_dir = paths::screenshot_dir(&paths::data_dir()?);
+    tokio::fs::create_dir_all(&screenshot_dir).await?;
+    let temp_screenshot_path = format!("{screenshot_dir}/screenshot_temp_{}.png", Uuid::new_v4());
+    let final_screenshot_path = format!("{screenshot_dir}/screenshot.png");
 
     // Capture Wayland-natively first. Pi OS (wayfire/labwc) composites the MPV
     // surface through the Wayland compositor, so the legacy `ffmpeg x11grab` path
@@ -455,11 +490,11 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     if captured {
         // Rename temp file to final file (atomic operation)
-        tokio::fs::rename(&temp_screenshot_path, final_screenshot_path).await?;
+        tokio::fs::rename(&temp_screenshot_path, &final_screenshot_path).await?;
         println!("Screenshot saved");
 
         // Call the upload_screenshot function after taking the screenshot
-        if let Err(e) = upload_screenshot(client, config, final_screenshot_path).await {
+        if let Err(e) = upload_screenshot(client, config, &final_screenshot_path).await {
             eprintln!("Failed to upload screenshot: {}", e);
         }
     } else {
@@ -468,16 +503,6 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
     }
 
     Ok(())
-}
-
-/// Whether this process is running as root (uid 0). The daemon normally runs as
-/// root, but the Wayland compositor runs as the desktop user, so we may need to
-/// drop privileges for `grim`.
-async fn running_as_root() -> bool {
-    match Command::new("id").arg("-u").output().await {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "0",
-        _ => false,
-    }
 }
 
 /// Find the active Wayland socket (e.g. "wayland-0" / "wayland-1") in the runtime
@@ -506,8 +531,7 @@ async fn detect_wayland_display(runtime_dir: &str) -> Option<String> {
 /// Capture the current Wayland output with `grim` (wlr-screencopy).
 /// Returns `Ok(true)` on success, `Ok(false)` if grim is unavailable or failed.
 async fn capture_wayland(out_path: &str) -> Result<bool, Box<dyn Error>> {
-    let runtime_dir =
-        env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
 
     let Some(wayland_display) = detect_wayland_display(&runtime_dir).await else {
         eprintln!(
@@ -518,46 +542,42 @@ async fn capture_wayland(out_path: &str) -> Result<bool, Box<dyn Error>> {
     };
 
     // Wayland sockets reject connections from a different user. When running as
-    // root, drop to the desktop user (pi) via `runuser`, re-injecting the session
-    // env with `env` (runuser otherwise strips it). When already running as the
-    // session user, invoke grim directly.
-    let output = if running_as_root().await {
-        Command::new("runuser")
-            .arg("-u")
-            .arg("pi")
-            .arg("--")
-            .arg("/usr/bin/env")
-            .arg(format!("XDG_RUNTIME_DIR={}", runtime_dir))
-            .arg(format!("WAYLAND_DISPLAY={}", wayland_display))
-            .arg("grim")
-            .arg(out_path)
-            .output()
-            .await?
-    } else {
-        Command::new("grim")
-            .env("XDG_RUNTIME_DIR", &runtime_dir)
-            .env("WAYLAND_DISPLAY", &wayland_display)
-            .arg(out_path)
-            .output()
-            .await?
-    };
+    // root (legacy fleet unit), drop to the desktop user (pi) via `runuser`,
+    // re-injecting the session env with `env` (runuser otherwise strips it). When
+    // already running as the session user (the image: cage and signaged-util are
+    // both `omniplay`), invoke grim directly. Either way grim streams the PNG to
+    // stdout and this process writes the file: `out_path` is under the data dir,
+    // which on a legacy device is /root/..., where `pi` could not write.
+    let grim = capture::grim_command(
+        privilege::current_privilege().await,
+        &runtime_dir,
+        &wayland_display,
+    );
+    let output = grim.to_command().output().await?;
 
-    if output.status.success() {
-        Ok(true)
-    } else {
+    let png = capture::png_from_output(&output);
+    if png.is_none() {
         eprintln!(
-            "grim failed (is the `grim` package installed?): {}",
+            "grim failed (is the `grim` package installed?): exit {}, {} bytes on stdout: {}",
+            output.status,
+            output.stdout.len(),
             String::from_utf8_lossy(&output.stderr)
         );
-        Ok(false)
     }
+    capture::save_png(png, out_path).await
 }
 
 /// Legacy X11 capture via `ffmpeg x11grab`. Retained only as a fallback for older
-/// X11-only devices — it yields a black frame under Wayland.
+/// X11-only devices — it yields a black frame under Wayland. Runs only when the
+/// environment names an X display: the binary no longer assumes `:0` anywhere.
 async fn capture_x11(out_path: &str) -> Result<bool, Box<dyn Error>> {
-    env::set_var("DISPLAY", ":0");
-    env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+    let display = match env::var("DISPLAY") {
+        Ok(d) if !d.is_empty() => d,
+        _ => {
+            eprintln!("DISPLAY is not set; no X11 fallback for the screenshot");
+            return Ok(false);
+        }
+    };
 
     // Get the screen resolution dynamically using `xrandr`
     let resolution_output = Command::new("xrandr").arg("--current").output().await?;
@@ -581,7 +601,7 @@ async fn capture_x11(out_path: &str) -> Result<bool, Box<dyn Error>> {
         .arg("-video_size")
         .arg(resolution)
         .arg("-i")
-        .arg(":0.0")
+        .arg(&display)
         .arg("-frames:v")
         .arg("1")
         .arg(out_path)
@@ -600,7 +620,10 @@ async fn capture_x11(out_path: &str) -> Result<bool, Box<dyn Error>> {
 }
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/api/omniplay/device-checkin/{}/screenshot-flag", config.url, config.id);
+    let url = format!(
+        "{}/api/omniplay/device-checkin/{}/screenshot-flag",
+        config.url, config.id
+    );
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -632,7 +655,11 @@ async fn upload_screenshot(
         .await?;
 
     if !presign_response.status().is_success() {
-        return Err(format!("Failed to get presigned URL: {:?}", presign_response.status()).into());
+        return Err(format!(
+            "Failed to get presigned URL: {:?}",
+            presign_response.status()
+        )
+        .into());
     }
 
     let presign_data: serde_json::Value = presign_response.json().await?;
@@ -687,6 +714,10 @@ async fn upload_screenshot(
 
         Ok(())
     } else {
-        Err(format!("Failed to confirm screenshot: {:?}", confirm_response.status()).into())
+        Err(format!(
+            "Failed to confirm screenshot: {:?}",
+            confirm_response.status()
+        )
+        .into())
     }
 }

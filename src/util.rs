@@ -9,7 +9,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
 };
 
-use std::env;
+use crate::paths;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Apikey {
@@ -65,7 +65,7 @@ pub struct ClientUpdateFlagsResponse {
 }
 
 impl Video {
-    /// Downloads videos or images to `$HOME/.local/share/signage`
+    /// Downloads videos or images to the data directory (see `paths::data_dir`).
     pub async fn download(&self, client: &Client) -> Result<String, Box<dyn std::error::Error>> {
         // Extract the file extension from the URL
         let path = Path::new(&self.asset_url);
@@ -75,12 +75,7 @@ impl Video {
             .unwrap_or("bin");
         // Clean up the directory after a successful download
 
-        let file_path = format!(
-            "{}/.local/share/signage/{}.{}",
-            std::env::var("HOME")?,
-            self.id,
-            extension
-        );
+        let file_path = format!("{}/{}.{}", paths::data_dir()?, self.id, extension);
 
         // Check if the file already exists
         if Path::new(&file_path).exists() {
@@ -181,7 +176,9 @@ pub async fn cleanup_directory(dir: &str, _videos: &[Video]) -> Result<(), Box<d
             if filename != "playlist.txt" && filename != "data.json" {
                 // Delete the file if it's not in playlist.txt (exact path match)
                 if !playlist_files.iter().any(|f| {
-                    Path::new(f.trim()).file_name().map_or(false, |n| n == filename.as_str())
+                    Path::new(f.trim())
+                        .file_name()
+                        .map_or(false, |n| n == filename.as_str())
                 }) {
                     println!("Deleting file not in playlist: {}", filename);
                     fs::remove_file(path).await?;
@@ -190,15 +187,4 @@ pub async fn cleanup_directory(dir: &str, _videos: &[Video]) -> Result<(), Box<d
         }
     }
     Ok(())
-}
-
-pub fn set_display() {
-    // Set the DISPLAY environment variable for the current process
-    env::set_var("DISPLAY", ":0");
-
-    // Optionally, print the current environment variable to verify
-    match env::var("DISPLAY") {
-        Ok(val) => println!("DISPLAY is set to: {}", val),
-        Err(e) => println!("Couldn't read DISPLAY: {}", e),
-    }
 }

@@ -26,4 +26,4 @@ fn main() {
     // Re-run if git changes
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
-} 
+}
